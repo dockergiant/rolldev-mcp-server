@@ -489,6 +489,7 @@ class RollDevServer {
 
     const rollCommand = [
       "db",
+      "connect",
       "-e",
       query,
     ];
