@@ -9,7 +9,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Required-2496ed)](https://docker.com)
 [![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-green)](https://modelcontextprotocol.io)
 
-A Model Context Protocol (MCP) server for [RollDev](https://docs.rolldev.com) + Magento 2 development environments. This server enables Claude and other LLMs to interact with RollDev projects, manage environments, execute commands, and initialize new Magento 2 projects seamlessly.
+A Model Context Protocol (MCP) server for [RollDev](https://dockergiant.github.io/rolldev) + Magento 2 development environments. This server enables Claude and other LLMs to interact with RollDev projects, manage environments, execute commands, and initialize new Magento 2 projects seamlessly.
 
 ## Features
 
