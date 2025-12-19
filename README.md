@@ -24,6 +24,10 @@ A Model Context Protocol (MCP) server for [RollDev](https://dockergiant.github.i
 - **Magento CLI Access**: Execute Magento commands through `roll magento`
 - **Composer Integration**: Run Composer commands in project environments
 
+### Reliability Features
+- **Command Timeouts**: All commands have appropriate timeouts to prevent hanging (5-15 min depending on operation)
+- **Output File Redirection**: Option to save command output to log files for later investigation
+
 ## Prerequisites
 
 - [RollDev](https://rolldev.com) installed and configured
@@ -111,18 +115,20 @@ Runs PHP scripts inside project containers.
 - **args**: Additional arguments (optional)
 
 ### rolldev_magento_cli
-Executes Magento CLI commands.
+Executes Magento CLI commands (5 minute timeout).
 - **project_path**: Path to the project directory
 - **command**: Magento command (without 'bin/magento' prefix)
 - **args**: Additional arguments (optional)
+- **save_output_to_file**: Save full output to a log file (optional, default: false)
 
 ### rolldev_composer
-Runs Composer commands in project environments.
+Runs Composer commands in project environments (10 minute timeout).
 - **project_path**: Path to the project directory
 - **command**: Composer command (e.g., "install", "update", "require symfony/console")
+- **save_output_to_file**: Save full output to a log file (optional, default: false)
 
 ### rolldev_magento2_init
-Initializes new Magento 2 projects with automatic configuration.
+Initializes new Magento 2 projects with automatic configuration (15 minute timeout).
 - **project_name**: Project name (lowercase, letters, numbers, hyphens only)
 - **magento_version**: Magento version (optional, defaults to "2.4.x")
 - **target_directory**: Target directory (optional, defaults to current directory)
@@ -153,6 +159,10 @@ Here are some example interactions you can try with Claude after setting up the 
 ### Composer Operations
 12. "Install dependencies with Composer in my project"
 13. "Require the symfony/console package in my project"
+
+### Output File Redirection
+14. "Run setup:upgrade and save the output to a file for investigation"
+15. "Execute composer install with output saved to a log file"
 
 ## Development
 

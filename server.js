@@ -7,10 +7,14 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { spawn, execSync } from "child_process";
-import { resolve } from "path";
-import { existsSync } from "fs";
+import { resolve, join } from "path";
+import { existsSync, writeFileSync, mkdirSync } from "fs";
+import { tmpdir } from "os";
 
 class RollDevServer {
+  // Directory for output log files
+  static OUTPUT_LOG_DIR = join(tmpdir(), "rolldev-mcp-logs");
+
   constructor() {
     this.server = new Server(
       {
@@ -24,7 +28,58 @@ class RollDevServer {
       },
     );
 
+    // Ensure log directory exists
+    this.ensureLogDirectory();
+
     this.setupToolHandlers();
+  }
+
+  ensureLogDirectory() {
+    try {
+      if (!existsSync(RollDevServer.OUTPUT_LOG_DIR)) {
+        mkdirSync(RollDevServer.OUTPUT_LOG_DIR, { recursive: true });
+      }
+    } catch (error) {
+      // Log directory creation failed, will fallback to inline output
+      console.error(`Failed to create log directory: ${error.message}`);
+    }
+  }
+
+  /**
+   * Save command output to a log file (only when explicitly requested)
+   * @param {string} stdout - Command stdout
+   * @param {string} stderr - Command stderr
+   * @param {string} command - Command that was executed
+   * @param {string} cwd - Working directory
+   * @returns {string|null} - Path to log file, or null on failure
+   */
+  saveOutputToFile(stdout, stderr, command, cwd) {
+    try {
+      const totalOutput = (stdout || "").length + (stderr || "").length;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const filename = `rolldev-output-${timestamp}.log`;
+      const filepath = join(RollDevServer.OUTPUT_LOG_DIR, filename);
+
+      const content = `RollDev Command Output Log
+========================
+Command: ${command}
+Working Directory: ${cwd}
+Timestamp: ${new Date().toISOString()}
+Total Output Size: ${totalOutput} characters
+
+=== STDOUT (${(stdout || "").length} chars) ===
+${stdout || "(no output)"}
+
+=== STDERR (${(stderr || "").length} chars) ===
+${stderr || "(no errors)"}
+`;
+
+      writeFileSync(filepath, content, "utf8");
+      return filepath;
+    } catch (error) {
+      console.error(`Failed to save output to file: ${error.message}`);
+      return null;
+    }
   }
 
   setupToolHandlers() {
@@ -170,6 +225,12 @@ class RollDevServer {
                   },
                   default: [],
                 },
+                save_output_to_file: {
+                  type: "boolean",
+                  description:
+                    "Save full output to a log file for later investigation (useful for long output)",
+                  default: false,
+                },
               },
               required: ["project_path", "command"],
             },
@@ -189,6 +250,12 @@ class RollDevServer {
                   type: "string",
                   description:
                     "Composer command to execute (e.g., 'install', 'update', 'require symfony/console', 'require-commerce')",
+                },
+                save_output_to_file: {
+                  type: "boolean",
+                  description:
+                    "Save full output to a log file for later investigation (useful for long output)",
+                  default: false,
                 },
               },
               required: ["project_path", "command"],
@@ -519,7 +586,7 @@ class RollDevServer {
   }
 
   async runMagentoCli(args) {
-    const { project_path, command, args: commandArgs = [] } = args;
+    const { project_path, command, args: commandArgs = [], save_output_to_file = false } = args;
 
     const rollCommand = [
       "magento",
@@ -527,17 +594,22 @@ class RollDevServer {
       ...commandArgs,
     ];
 
+    // 5 minute timeout for most Magento commands
+    const timeoutMs = 300000;
+
     return await this.executeRollCommand(
       project_path,
       rollCommand,
       `Running Magento CLI: roll magento ${command}`,
+      timeoutMs,
+      save_output_to_file,
     );
   }
 
 
 
   async runComposer(args) {
-    const { project_path, command } = args;
+    const { project_path, command, save_output_to_file = false } = args;
 
     if (!project_path) {
       throw new Error("project_path is required");
@@ -564,31 +636,102 @@ class RollDevServer {
         ...commandParts,
       ];
 
+      // 10 minute timeout for composer operations (can be slow)
+      const timeoutMs = 600000;
+
       const result = await this.executeCommand(
         "roll",
         rollCommand,
         absoluteProjectPath,
+        timeoutMs,
       );
 
       const commandStr = `roll composer ${command}`;
       const isSuccess = result.code === 0;
 
+      // Save output to file only when explicitly requested
+      const logFilePath = save_output_to_file
+        ? this.saveOutputToFile(result.stdout, result.stderr, commandStr, absoluteProjectPath)
+        : null;
+
+      let responseText;
+      if (logFilePath) {
+        const outputPreview = (result.stdout || "").substring(0, 500);
+        const stderrPreview = (result.stderr || "").substring(0, 500);
+        responseText = `Composer command ${isSuccess ? "completed successfully" : "failed"}!
+
+Command: ${commandStr}
+Working directory: ${absoluteProjectPath}
+Exit Code: ${result.code}${result.timedOut ? " (TIMED OUT)" : ""}
+
+📁 Full output saved to file:
+${logFilePath}
+
+Output Preview (first 500 chars):
+${outputPreview || "(no output)"}${(result.stdout || "").length > 500 ? "\n...(truncated)" : ""}
+
+Errors Preview (first 500 chars):
+${stderrPreview || "(no errors)"}${(result.stderr || "").length > 500 ? "\n...(truncated)" : ""}`;
+      } else {
+        responseText = `Composer command ${isSuccess ? "completed successfully" : "failed"}!
+
+Command: ${commandStr}
+Working directory: ${absoluteProjectPath}
+Exit Code: ${result.code}${result.timedOut ? " (TIMED OUT)" : ""}
+
+Output:
+${result.stdout || "(no output)"}
+
+Errors:
+${result.stderr || "(no errors)"}`;
+      }
+
       return {
         content: [
           {
             type: "text",
-            text: `Composer command ${isSuccess ? "completed successfully" : "failed"}!\n\nCommand: ${commandStr}\nWorking directory: ${absoluteProjectPath}\nExit Code: ${result.code}\n\nOutput:\n${result.stdout || "(no output)"}\n\nErrors:\n${result.stderr || "(no errors)"}`,
+            text: responseText,
           },
         ],
         isError: !isSuccess,
       };
     } catch (error) {
       const commandStr = `roll composer ${command}`;
+
+      // Save error output to file only when explicitly requested
+      const logFilePath = save_output_to_file
+        ? this.saveOutputToFile(error.stdout, error.stderr, commandStr, absoluteProjectPath)
+        : null;
+
+      let responseText;
+      if (logFilePath) {
+        responseText = `Failed to execute Composer command:
+
+Command: ${commandStr}
+Working directory: ${absoluteProjectPath}
+Error: ${error.message}
+
+📁 Full output saved to file:
+${logFilePath}`;
+      } else {
+        responseText = `Failed to execute Composer command:
+
+Command: ${commandStr}
+Working directory: ${absoluteProjectPath}
+Error: ${error.message}
+
+Output:
+${error.stdout || "(no output)"}
+
+Errors:
+${error.stderr || "(no errors)"}`;
+      }
+
       return {
         content: [
           {
             type: "text",
-            text: `Failed to execute Composer command:\n\nCommand: ${commandStr}\nWorking directory: ${absoluteProjectPath}\nError: ${error.message}\n\nOutput:\n${error.stdout || "(no output)"}\n\nErrors:\n${error.stderr || "(no errors)"}`,
+            text: responseText,
           },
         ],
         isError: true,
@@ -596,7 +739,7 @@ class RollDevServer {
     }
   }
 
-  async executeRollCommand(project_path, rollArgs, description) {
+  async executeRollCommand(project_path, rollArgs, description, timeoutMs = 300000, saveToFile = false) {
     if (!project_path) {
       throw new Error("project_path is required");
     }
@@ -615,27 +758,97 @@ class RollDevServer {
         "roll",
         rollArgs,
         absoluteProjectPath,
+        timeoutMs,
       );
 
       const commandStr = `roll ${rollArgs.join(" ")}`;
       const isSuccess = result.code === 0;
 
+      // Save output to file only when explicitly requested
+      const logFilePath = saveToFile
+        ? this.saveOutputToFile(result.stdout, result.stderr, commandStr, absoluteProjectPath)
+        : null;
+
+      let responseText;
+      if (logFilePath) {
+        // Output saved to file
+        const outputPreview = (result.stdout || "").substring(0, 500);
+        const stderrPreview = (result.stderr || "").substring(0, 500);
+        responseText = `${description} ${isSuccess ? "completed successfully" : "failed"}!
+
+Command: ${commandStr}
+Working directory: ${absoluteProjectPath}
+Exit Code: ${result.code}${result.timedOut ? " (TIMED OUT)" : ""}
+
+📁 Full output saved to file:
+${logFilePath}
+
+Output Preview (first 500 chars):
+${outputPreview || "(no output)"}${(result.stdout || "").length > 500 ? "\n...(truncated)" : ""}
+
+Errors Preview (first 500 chars):
+${stderrPreview || "(no errors)"}${(result.stderr || "").length > 500 ? "\n...(truncated)" : ""}`;
+      } else {
+        // Return inline output
+        responseText = `${description} ${isSuccess ? "completed successfully" : "failed"}!
+
+Command: ${commandStr}
+Working directory: ${absoluteProjectPath}
+Exit Code: ${result.code}${result.timedOut ? " (TIMED OUT)" : ""}
+
+Output:
+${result.stdout || "(no output)"}
+
+Errors:
+${result.stderr || "(no errors)"}`;
+      }
+
       return {
         content: [
           {
             type: "text",
-            text: `${description} ${isSuccess ? "completed successfully" : "failed"}!\n\nCommand: ${commandStr}\nWorking directory: ${absoluteProjectPath}\nExit Code: ${result.code}\n\nOutput:\n${result.stdout || "(no output)"}\n\nErrors:\n${result.stderr || "(no errors)"}`,
+            text: responseText,
           },
         ],
         isError: !isSuccess,
       };
     } catch (error) {
       const commandStr = `roll ${rollArgs.join(" ")}`;
+
+      // Save error output to file only when explicitly requested
+      const logFilePath = saveToFile
+        ? this.saveOutputToFile(error.stdout, error.stderr, commandStr, absoluteProjectPath)
+        : null;
+
+      let responseText;
+      if (logFilePath) {
+        responseText = `Failed to execute command:
+
+Command: ${commandStr}
+Working directory: ${absoluteProjectPath}
+Error: ${error.message}
+
+📁 Full output saved to file:
+${logFilePath}`;
+      } else {
+        responseText = `Failed to execute command:
+
+Command: ${commandStr}
+Working directory: ${absoluteProjectPath}
+Error: ${error.message}
+
+Output:
+${error.stdout || "(no output)"}
+
+Errors:
+${error.stderr || "(no errors)"}`;
+      }
+
       return {
         content: [
           {
             type: "text",
-            text: `Failed to execute command:\n\nCommand: ${commandStr}\nWorking directory: ${absoluteProjectPath}\nError: ${error.message}\n\nOutput:\n${error.stdout || "(no output)"}\n\nErrors:\n${error.stderr || "(no errors)"}`,
+            text: responseText,
           },
         ],
         isError: true,
@@ -665,11 +878,15 @@ class RollDevServer {
       // Determine working directory (current directory or target_directory)
       const workingDir = target_directory ? resolve(target_directory) : process.cwd();
 
+      // 15 minute timeout for full Magento 2 initialization (very long-running)
+      const timeoutMs = 900000;
+
       // Execute the magento2-init command
       const result = await this.executeCommand(
         "roll",
         rollCommand,
         workingDir,
+        timeoutMs,
       );
 
       const commandStr = `roll ${rollCommand.join(" ")}`;
@@ -713,7 +930,7 @@ class RollDevServer {
     }
   }
 
-  executeCommand(command, args = [], cwd = process.cwd()) {
+  executeCommand(command, args = [], cwd = process.cwd(), timeoutMs = 300000) {
     return new Promise((resolve, reject) => {
       const childProcess = spawn(command, args, {
         cwd,
@@ -722,6 +939,46 @@ class RollDevServer {
 
       let stdout = "";
       let stderr = "";
+      let resolved = false;
+
+      // Helper to resolve only once
+      const resolveOnce = (result) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          resolve(result);
+        }
+      };
+
+      const rejectOnce = (error) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          reject(error);
+        }
+      };
+
+      // Timeout handler
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          // Try graceful termination first
+          childProcess.kill('SIGTERM');
+
+          // Force kill after 5 seconds if still running
+          setTimeout(() => {
+            if (!resolved) {
+              childProcess.kill('SIGKILL');
+            }
+          }, 5000);
+
+          resolveOnce({
+            stdout,
+            stderr: stderr + `\n[Command timed out after ${timeoutMs / 1000}s]`,
+            code: -1,
+            timedOut: true,
+          });
+        }
+      }, timeoutMs);
 
       childProcess.stdout.on("data", (data) => {
         stdout += data.toString();
@@ -732,7 +989,12 @@ class RollDevServer {
       });
 
       childProcess.on("close", (code) => {
-        resolve({ stdout, stderr, code });
+        resolveOnce({ stdout, stderr, code });
+      });
+
+      // Also listen to 'exit' as backup (some processes emit exit but not close)
+      childProcess.on("exit", (code) => {
+        resolveOnce({ stdout, stderr, code });
       });
 
       childProcess.on("error", (error) => {
@@ -741,7 +1003,7 @@ class RollDevServer {
         );
         enhancedError.stdout = stdout;
         enhancedError.stderr = stderr;
-        reject(enhancedError);
+        rejectOnce(enhancedError);
       });
     });
   }
