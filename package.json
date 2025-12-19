@@ -1,6 +1,6 @@
 {
   "name": "@disrex/rolldev-mcp-server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MCP Server for RollDev + Magento 2 development workflow with project initialization",
   "license": "MIT",
   "author": "RollDev Team & Disrex",
